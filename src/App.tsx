@@ -5,6 +5,7 @@ import { ToastProvider, ErrorBoundary, PixelLoader } from './ui';
 
 // Immediate static imports for Team & Public routes (instant mobile load)
 import { LandingPage } from './routes/public/LandingPage';
+import { RulesPage } from './routes/public/RulesPage';
 import { NotFoundPage } from './routes/public/NotFoundPage';
 import { TeamJoinPage } from './routes/team/TeamJoinPage';
 import { TeamDashboardPage } from './routes/team/TeamDashboardPage';
@@ -36,6 +37,7 @@ const AppRoutes: React.FC = () => {
         <Routes>
           {/* Public Root */}
           <Route path="/" element={<LandingPage />} />
+          <Route path="/rules" element={<RulesPage />} />
 
           {/* Team Routes (Mobile-first, instantly loaded) */}
           <Route path="/join" element={<TeamJoinPage />} />
