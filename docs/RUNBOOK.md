@@ -12,7 +12,7 @@ STARTUPOLY is a **physical board game** featuring a real-time, server-authoritat
 
 - **Event Admin (Laptop)**: 1 operator per room operating on a laptop/desktop ($\ge 1024\text{ px}$). Authenticated with admin email/password. Records board transactions, controls the 50:00 match clock, resolves ties, and finalizes results.
 - **Team Scoreboards (Phones)**: 1 phone per team (5–6 teams per match). Anonymous, strictly read-only display showing authoritative cash, company value (CV), clock, and owned businesses.
-- **Projector Screen**: Displays the 3-meter legible 6-character room code during lobby, followed optionally by the live tournament standings or podium.
+- **Open-ground operation**: No projector or shared screen is required. The admin laptop runs the control room, while each team uses its own phone for its private scoreboard.
 
 ---
 
@@ -112,7 +112,7 @@ The system automatically detects ties according to the official tournament tie-b
    - 🥈 **2nd Place (Silver)**
    - 🥉 **3rd Place (Bronze)**
    - Full standings table with CV, Cash, and owned business breakdown.
-4. Project this screen to the tournament hall for the closing ceremony.
+4. The Game Master announces the podium from the admin laptop; teams can view their own final result on their phones.
 
 ### Step 11: Start Next Match
 1. Click **"NEXT MATCH"** at the top right of the screen.
