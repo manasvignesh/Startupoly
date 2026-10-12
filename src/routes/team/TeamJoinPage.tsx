@@ -11,6 +11,7 @@ import {
 import { ErrorBanner, useToast, Skeleton } from '../../ui';
 import { rpcGetLobby, rpcJoinTeam } from '../../data/rpc';
 import { ensureAnonymousSession } from '../../data/client';
+import { isNetworkError } from '../../lib/errors';
 
 interface LobbyTeam {
   slot: number;
@@ -61,8 +62,11 @@ export const TeamJoinPage: React.FC = () => {
       if (data.teams.length > 0 && selectedSlot === null) {
         setSelectedSlot(data.teams[0].slot);
       }
-    } catch {
-      setErrorMessage("Code, team or PIN didn't match");
+    } catch (err) {
+      const message = isNetworkError(err)
+        ? 'Unable to reach the match server. Check your connection and try again.'
+        : "Code, team or PIN didn't match";
+      setErrorMessage(message);
       setLobbyTeams([]);
       setSelectedSlot(null);
     } finally {
@@ -106,13 +110,16 @@ export const TeamJoinPage: React.FC = () => {
         navigate('/team');
       }, 600);
     } catch (err: any) {
+      let message = "Code, team or PIN didn't match";
       if (err.code === 'TOO_MANY_ATTEMPTS') {
-        setErrorMessage("Too many tries — wait a minute");
-        errorToast("Too many tries — wait a minute");
-      } else {
-        setErrorMessage("Code, team or PIN didn't match");
-        errorToast("Code, team or PIN didn't match");
+        message = 'Too many tries — wait a minute';
+      } else if (err.code === 'TEAM_ALREADY_CLAIMED') {
+        message = 'This team is already connected. Ask the organiser to release it before rejoining.';
+      } else if (isNetworkError(err)) {
+        message = 'Unable to reach the match server. Check your connection and try again.';
       }
+      setErrorMessage(message);
+      errorToast(message);
     } finally {
       setIsJoining(false);
     }
