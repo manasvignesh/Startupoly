@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link, Navigate } from 'react-router-dom';
 import { useAuth } from '../../data/auth';
 import { supabase } from '../../data/client';
-import { PixelButton, PixelBrickTile, Modal, PixelLoader } from '../../ui';
+import { PixelButton, PixelBrickTile, Modal, PixelLoader, ErrorBanner } from '../../ui';
 import { CreateRoomView } from './CreateRoomView';
 
 export const AdminDashboardPage: React.FC = () => {
@@ -10,6 +10,8 @@ export const AdminDashboardPage: React.FC = () => {
   const [checkingActiveRoom, setCheckingActiveRoom] = useState(true);
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
+  const [roomCheckError, setRoomCheckError] = useState<string | null>(null);
+  const [checkAttempt, setCheckAttempt] = useState(0);
 
   useEffect(() => {
     let isMounted = true;
@@ -23,11 +25,17 @@ export const AdminDashboardPage: React.FC = () => {
           .limit(1)
           .maybeSingle();
 
-        if (!error && data?.id && isMounted) {
+        if (error) {
+          throw error;
+        }
+        if (data?.id && isMounted) {
           setActiveRoomId(data.id);
         }
       } catch (err) {
         console.warn('Failed to check active room:', err);
+        if (isMounted) {
+          setRoomCheckError('Unable to verify the current match room. Check the connection before creating another room.');
+        }
       } finally {
         if (isMounted) {
           setCheckingActiveRoom(false);
@@ -39,7 +47,7 @@ export const AdminDashboardPage: React.FC = () => {
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [checkAttempt]);
 
   if (checkingActiveRoom) {
     return <PixelLoader label="CHECKING MATCH STATE..." delayMs={0} />;
@@ -85,7 +93,18 @@ export const AdminDashboardPage: React.FC = () => {
 
       {/* Main Container: Create Room View */}
       <main className="flex-1 max-w-5xl w-full mx-auto p-4 sm:p-6 lg:p-8 flex flex-col gap-6">
-        <CreateRoomView />
+        {roomCheckError ? (
+          <ErrorBanner
+            message={roomCheckError}
+            onRetry={() => {
+              setRoomCheckError(null);
+              setCheckingActiveRoom(true);
+              setCheckAttempt((attempt) => attempt + 1);
+            }}
+          />
+        ) : (
+          <CreateRoomView />
+        )}
       </main>
 
       {/* Brick Ground Base */}
