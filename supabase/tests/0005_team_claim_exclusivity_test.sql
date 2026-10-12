@@ -4,7 +4,7 @@ BEGIN;
 
 CREATE EXTENSION IF NOT EXISTS pgtap;
 
-SELECT plan(4);
+SELECT plan(5);
 SELECT set_config('app.env', 'test', true);
 SELECT set_config('app.test_now', '2026-03-01 10:00:00+00', true);
 
