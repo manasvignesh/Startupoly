@@ -19,6 +19,7 @@ import { DistantHillsAndCastle } from './DistantHillsAndCastle';
 import { SkyLayer } from './SkyLayer';
 import { TapCoinBurst } from './TapCoinBurst';
 import { GameIntroOverlay } from './intro/GameIntroOverlay';
+import { RulesSection } from './RulesSection';
 
 export const LandingPage: React.FC = () => {
   const { isFirstVisit, markSeen } = useFirstVisit();
@@ -52,7 +53,7 @@ export const LandingPage: React.FC = () => {
   return (
     <div
       data-cta={activeCta || undefined}
-      className="min-h-screen lg:h-screen lg:max-h-screen nes-sky-gradient flex flex-col justify-between relative overflow-x-hidden selection:bg-[#FFCC00] selection:text-[#102040] anim-scene-transition"
+      id="top" className="min-h-screen nes-sky-gradient flex flex-col justify-between relative overflow-x-hidden selection:bg-[#FFCC00] selection:text-[#102040] anim-scene-transition"
     >
       {/* ======================================================================= */}
       {/* RETRO GAME OPENING INTRO CINEMATIC (Overlay)                           */}
@@ -60,6 +61,13 @@ export const LandingPage: React.FC = () => {
       {showIntro && (
         <GameIntroOverlay onComplete={() => setShowIntro(false)} />
       )}
+
+      <a
+        href="#rules"
+        className="absolute top-3 right-3 sm:top-5 sm:right-5 z-30 font-pixel text-[9px] sm:text-[10px] text-[#102040] bg-[#FFCC00] border-2 border-[#102040] px-2.5 py-2 shadow-[3px_3px_0_#102040] hover:bg-white transition-colors"
+      >
+        RULES ↓
+      </a>
 
       {/* ======================================================================= */}
       {/* LAYER 0: Upper Sky Moving Clouds Atmosphere                             */}
@@ -389,6 +397,8 @@ export const LandingPage: React.FC = () => {
           </div>
         </main>
       </div>
+
+      <RulesSection />
 
       {/* ======================================================================= */}
       {/* Tap / Touch Easter Egg Bursts (Phase 4)                                 */}
