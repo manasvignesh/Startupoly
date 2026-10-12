@@ -5,13 +5,30 @@ import { logger } from '../lib/logger';
 
 type FunctionName = keyof Database['public']['Functions'];
 
+const READ_ONLY_RPCS = new Set<FunctionName>([
+  'server_time',
+  'get_lobby',
+  'get_my_state',
+  'get_admin_snapshot',
+  'list_history',
+  'get_history_detail',
+  'get_standings',
+]);
+
+function canRetrySafely(fnName: FunctionName, args?: Record<string, unknown>): boolean {
+  // Reads can be retried. Mutations require an idempotency key; otherwise a
+  // lost response could apply a cash/CV/business mutation twice.
+  return READ_ONLY_RPCS.has(fnName) || typeof args?.request_id === 'string';
+}
+
 async function callRpc<T>(fnName: FunctionName, args?: Record<string, unknown>, retryOnNetwork = true): Promise<T> {
+  const retryAllowed = retryOnNetwork && canRetrySafely(fnName, args);
   try {
     const { data, error } = await (supabase.rpc as any)(fnName, args);
     if (error) {
       const parsed = parseRpcError(error);
-      if (retryOnNetwork && isNetworkError(error) && !isBusinessError(parsed)) {
-        logger.warn('RPC', `Network failure calling ${fnName}. Retrying once with identical request_id...`);
+      if (retryAllowed && isNetworkError(error) && !isBusinessError(parsed)) {
+        logger.warn('RPC', `Network failure calling ${fnName}. Retrying safe request once...`);
         await new Promise((r) => setTimeout(r, 600));
         return callRpc<T>(fnName, args, false);
       }
@@ -20,8 +37,8 @@ async function callRpc<T>(fnName: FunctionName, args?: Record<string, unknown>, 
     return data as T;
   } catch (err) {
     const parsed = parseRpcError(err);
-    if (retryOnNetwork && isNetworkError(err) && !isBusinessError(parsed)) {
-      logger.warn('RPC', `Network error calling ${fnName}. Retrying once with identical request_id...`);
+    if (retryAllowed && isNetworkError(err) && !isBusinessError(parsed)) {
+      logger.warn('RPC', `Network error calling ${fnName}. Retrying safe request once...`);
       await new Promise((r) => setTimeout(r, 600));
       return callRpc<T>(fnName, args, false);
     }
