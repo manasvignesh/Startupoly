@@ -83,6 +83,10 @@ export const ERROR_MAP: Record<string, ErrorMeta> = {
     message: 'Tiebreak required: Teams share identical metrics. Set tiebreak order first.',
     retryable: false,
   },
+  TEAM_ALREADY_CLAIMED: {
+    message: 'This team is already connected on another phone. Ask the organiser to release it before rejoining.',
+    retryable: false,
+  },
   BAD_CODE_OR_PIN: {
     message: 'Invalid match code, team slot, or 4-digit PIN.',
     retryable: true,
