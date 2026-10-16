@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Modal, PixelButton } from '../../../../ui';
 import { PreviewTable } from './PreviewTable';
 import { computeSteal, TeamState } from '../../../../domain/quickActions';
+import { safeRandomUUID } from '../../../../lib/uuid';
 
 export interface StealDialogProps {
   isOpen: boolean;
@@ -52,7 +53,7 @@ export const StealDialog: React.FC<StealDialogProps> = ({
       setVictimId(firstVictim);
       setCustomAmount(undefined);
       setNote('');
-      setRequestId(crypto.randomUUID());
+      setRequestId(safeRandomUUID());
       setError(null);
       setIsSubmitting(false);
     }

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Modal, PixelButton } from '../../../../ui';
 import { PreviewTable } from './PreviewTable';
 import { computeRent, TeamState } from '../../../../domain/quickActions';
+import { safeRandomUUID } from '../../../../lib/uuid';
 
 export interface RentDialogProps {
   isOpen: boolean;
@@ -61,7 +62,7 @@ export const RentDialog: React.FC<RentDialogProps> = ({
       setCustomRent(undefined);
       setCustomCv(undefined);
       setNote('');
-      setRequestId(crypto.randomUUID());
+      setRequestId(safeRandomUUID());
       setError(null);
       setIsSubmitting(false);
     }

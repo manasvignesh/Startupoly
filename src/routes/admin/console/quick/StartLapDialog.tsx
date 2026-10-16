@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Modal, PixelButton } from '../../../../ui';
 import { PreviewTable } from './PreviewTable';
 import { computeStart, TeamState } from '../../../../domain/quickActions';
+import { safeRandomUUID } from '../../../../lib/uuid';
 
 export interface StartLapDialogProps {
   isOpen: boolean;
@@ -44,7 +45,7 @@ export const StartLapDialog: React.FC<StartLapDialogProps> = ({
       setCustomCash(undefined);
       setCustomCv(undefined);
       setNote('');
-      setRequestId(crypto.randomUUID());
+      setRequestId(safeRandomUUID());
       setError(null);
       setIsSubmitting(false);
     }

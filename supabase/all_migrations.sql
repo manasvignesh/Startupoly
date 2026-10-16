@@ -3064,3 +3064,976 @@ REVOKE ALL ON FUNCTION public.get_my_state() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.get_my_state() TO authenticated, anon;
 
 COMMIT;
+
+
+-- Migration 0016: Security Hardening & Rate Limiting
+-- 1. Anti-Brute-Force Rate Limiting: Throttle failed join attempts per target team slot
+--    in addition to per-user throttle, preventing anonymous session rotation attacks.
+-- 2. Oracle Elimination: Block PIN testing on already-claimed teams before PIN validation.
+-- 3. Clock Security: Restrict app_now() simulated clock to privileged test roles only.
+-- 4. Search Path Hygiene: Add explicit SET search_path = public to all trigger & helper functions.
+
+BEGIN;
+
+CREATE OR REPLACE FUNCTION public.app_now()
+RETURNS timestamptz
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  test_now text;
+  app_env text;
+BEGIN
+  test_now := current_setting('app.test_now', true);
+  app_env := current_setting('app.env', true);
+  IF test_now IS NOT NULL AND test_now <> '' AND app_env = 'test' THEN
+    IF nullif(current_setting('request.jwt.claim.role', true), '') IS NULL OR current_user IN ('postgres', 'supabase_admin') THEN
+      RETURN test_now::timestamptz;
+    END IF;
+  END IF;
+  RETURN clock_timestamp();
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.raise_error(
+  err_code text,
+  detail jsonb DEFAULT '{}'::jsonb
+)
+RETURNS void
+LANGUAGE plpgsql
+SET search_path = public
+AS $$
+BEGIN
+  RAISE EXCEPTION '%', err_code USING DETAIL = detail::text;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.fn_check_business_cap()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = public
+AS $$
+BEGIN
+  IF (SELECT count(*) FROM public.team_businesses WHERE team_id = NEW.team_id) >= 3 THEN
+    RAISE EXCEPTION 'BUSINESS_CAP';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.fn_check_team_room_immutable()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = public
+AS $$
+DECLARE
+  r_status public.room_status;
+  target_room_id uuid;
+BEGIN
+  target_room_id := CASE WHEN TG_OP = 'DELETE' THEN OLD.room_id ELSE NEW.room_id END;
+  SELECT status INTO r_status FROM public.rooms WHERE id = target_room_id;
+  IF r_status = 'FINALIZED' THEN
+    RAISE EXCEPTION 'ROOM_FINALIZED';
+  END IF;
+  RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.fn_check_team_business_room_immutable()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = public
+AS $$
+DECLARE
+  r_status public.room_status;
+  target_room_id uuid;
+BEGIN
+  target_room_id := CASE WHEN TG_OP = 'DELETE' THEN OLD.room_id ELSE NEW.room_id END;
+  SELECT status INTO r_status FROM public.rooms WHERE id = target_room_id;
+  IF r_status = 'FINALIZED' THEN
+    RAISE EXCEPTION 'ROOM_FINALIZED';
+  END IF;
+  RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.fn_check_room_immutable()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = public
+AS $$
+BEGIN
+  IF OLD.status = 'FINALIZED' THEN
+    RAISE EXCEPTION 'ROOM_FINALIZED';
+  END IF;
+  RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.fn_check_room_status_transition()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = public
+AS $$
+BEGIN
+  IF OLD.status IS DISTINCT FROM NEW.status THEN
+    IF NOT (
+      (OLD.status = 'CREATED' AND NEW.status = 'LOBBY') OR
+      (OLD.status = 'LOBBY' AND NEW.status = 'ACTIVE') OR
+      (OLD.status = 'ACTIVE' AND NEW.status = 'TIME_EXPIRED') OR
+      (OLD.status = 'ACTIVE' AND NEW.status = 'LOBBY') OR
+      (OLD.status = 'TIME_EXPIRED' AND NEW.status = 'FINALIZED')
+    ) THEN
+      RAISE EXCEPTION 'INVALID_TRANSITION';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.fn_check_immutable_table()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = public
+AS $$
+BEGIN
+  RAISE EXCEPTION 'IMMUTABLE';
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.join_team(
+  code text,
+  slot int,
+  pin text
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_user_id uuid := auth.uid();
+  v_code text := upper(trim(coalesce(code, '')));
+  v_pin text := trim(coalesce(pin, ''));
+  v_user_fail_count int;
+  v_team_fail_count int;
+  v_room_id uuid;
+  v_status public.room_status;
+  v_team_id uuid;
+  v_name text;
+  v_real_pin text;
+  v_first_claim boolean;
+BEGIN
+  IF v_user_id IS NULL THEN
+    PERFORM public.raise_error('NOT_AUTHENTICATED');
+  END IF;
+
+  SELECT count(*) INTO v_user_fail_count
+  FROM public.join_attempts
+  WHERE user_id = v_user_id
+    AND success = false
+    AND attempted_at >= public.app_now() - interval '60 seconds';
+
+  IF v_user_fail_count >= 5 THEN
+    PERFORM public.raise_error('TOO_MANY_ATTEMPTS', jsonb_build_object('retry_after_seconds', 60));
+  END IF;
+
+  SELECT id, status INTO v_room_id, v_status
+  FROM public.rooms
+  WHERE public.rooms.code = v_code
+    AND status IN ('LOBBY', 'ACTIVE', 'TIME_EXPIRED');
+
+  IF NOT FOUND THEN
+    INSERT INTO public.join_attempts (user_id, team_id, success, attempted_at)
+    VALUES (v_user_id, NULL, false, public.app_now());
+    PERFORM public.raise_error('BAD_CODE_OR_PIN');
+  END IF;
+
+  SELECT id, name INTO v_team_id, v_name
+  FROM public.teams
+  WHERE room_id = v_room_id AND teams.slot = join_team.slot;
+
+  IF NOT FOUND THEN
+    INSERT INTO public.join_attempts (user_id, team_id, success, attempted_at)
+    VALUES (v_user_id, NULL, false, public.app_now());
+    PERFORM public.raise_error('BAD_CODE_OR_PIN');
+  END IF;
+
+  SELECT count(*) INTO v_team_fail_count
+  FROM public.join_attempts
+  WHERE team_id = v_team_id
+    AND success = false
+    AND attempted_at >= public.app_now() - interval '60 seconds';
+
+  IF v_team_fail_count >= 10 THEN
+    PERFORM public.raise_error('TOO_MANY_ATTEMPTS', jsonb_build_object('retry_after_seconds', 60));
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM public.team_claims
+    WHERE team_id = v_team_id
+      AND user_id <> v_user_id
+  ) THEN
+    PERFORM public.raise_error('TEAM_ALREADY_CLAIMED');
+  END IF;
+
+  SELECT join_pin INTO v_real_pin
+  FROM public.team_secrets
+  WHERE team_id = v_team_id;
+
+  IF v_real_pin IS DISTINCT FROM v_pin THEN
+    INSERT INTO public.join_attempts (user_id, team_id, success, attempted_at)
+    VALUES (v_user_id, v_team_id, false, public.app_now());
+    PERFORM public.raise_error('BAD_CODE_OR_PIN');
+  END IF;
+
+  INSERT INTO public.join_attempts (user_id, team_id, success, attempted_at)
+  VALUES (v_user_id, v_team_id, true, public.app_now());
+
+  v_first_claim := NOT EXISTS (
+    SELECT 1 FROM public.team_claims WHERE team_id = v_team_id
+  );
+
+  INSERT INTO public.team_claims (user_id, team_id, claimed_at)
+  VALUES (v_user_id, v_team_id, public.app_now())
+  ON CONFLICT (user_id, team_id) DO NOTHING;
+
+  IF v_first_claim THEN
+    INSERT INTO public.activity_events (
+      room_id, team_id, type, new, actor_id, created_at
+    ) VALUES (
+      v_room_id,
+      v_team_id,
+      'TEAM_CLAIMED',
+      jsonb_build_object('slot', slot, 'name', v_name),
+      v_user_id,
+      public.app_now()
+    );
+  END IF;
+
+  RETURN jsonb_build_object('team_id', v_team_id, 'room_id', v_room_id);
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.join_team(text, int, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.join_team(text, int, text) TO anon, authenticated;
+
+COMMIT;
+
+-- Migration 0017: Game Accounting & Company Value (CV) Integrity
+-- 1. CV Deduction on Correction: In admin_remove_business, when reason = 'CORRECTION',
+--    deduct initial_cv and all upgrade CV associated with the removed business (floored at 0).
+-- 2. Bankruptcy Cash Depletion: In admin_set_bankrupt, when value = true, explicitly set
+--    cash = 0 in accordance with rulebook bankruptcy rules.
+-- 3. Bankrupt Team Mutation Blocking: In admin_adjust and admin_set_team_values, reject
+--    direct financial adjustments on bankrupt teams with TEAM_BANKRUPT.
+
+BEGIN;
+
+-- 1. admin_remove_business: Deduct CV on CORRECTION, maintain cash credit on FORCED_SALE
+CREATE OR REPLACE FUNCTION public.admin_remove_business(
+  team_id uuid,
+  business_key text,
+  reason text,
+  credit_resale boolean DEFAULT true,
+  expected_version int DEFAULT 0,
+  request_id uuid DEFAULT NULL,
+  note text DEFAULT NULL
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_room_id uuid;
+  v_status public.room_status;
+  v_curr_ver int;
+  v_cash int;
+  v_cv int;
+  v_curr_level smallint;
+  v_cost int;
+  v_initial_cv int;
+  v_u1_cv int;
+  v_u2_cv int;
+  v_cv_deduction int := 0;
+  v_is_correction boolean := false;
+  v_prev jsonb;
+  v_new jsonb;
+BEGIN
+  IF NOT public.is_admin() THEN
+    PERFORM public.raise_error('NOT_ADMIN');
+  END IF;
+
+  IF reason NOT IN ('FORCED_SALE', 'BANKRUPTCY', 'CORRECTION') THEN
+    PERFORM public.raise_error('INVALID_VALUE', jsonb_build_object('reason', reason));
+  END IF;
+
+  IF request_id IS NOT NULL AND EXISTS (SELECT 1 FROM public.activity_events WHERE activity_events.request_id = admin_remove_business.request_id) THEN
+    RETURN public.get_team_snapshot(team_id);
+  END IF;
+
+  SELECT t.room_id, t.version, t.cash, t.cv
+  INTO v_room_id, v_curr_ver, v_cash, v_cv
+  FROM public.teams t
+  WHERE t.id = team_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    PERFORM public.raise_error('ROOM_NOT_FOUND');
+  END IF;
+
+  PERFORM public.expire_if_due(v_room_id);
+  SELECT status INTO v_status FROM public.rooms WHERE id = v_room_id FOR UPDATE;
+
+  IF v_status = 'TIME_EXPIRED' THEN
+    IF note IS NULL OR trim(note) = '' THEN
+      PERFORM public.raise_error('NOTE_REQUIRED');
+    END IF;
+    v_is_correction := true;
+  ELSIF v_status <> 'ACTIVE' THEN
+    PERFORM public.raise_error('ROOM_NOT_EDITABLE', jsonb_build_object('status', v_status));
+  END IF;
+
+  IF reason = 'CORRECTION' THEN
+    v_is_correction := true;
+  END IF;
+
+  IF v_curr_ver <> expected_version THEN
+    PERFORM public.raise_error('VERSION_CONFLICT', jsonb_build_object('expected_version', expected_version, 'current_version', v_curr_ver));
+  END IF;
+
+  SELECT level INTO v_curr_level
+  FROM public.team_businesses
+  WHERE team_businesses.team_id = admin_remove_business.team_id
+    AND team_businesses.business_key = admin_remove_business.business_key
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    PERFORM public.raise_error('BUSINESS_NOT_OWNED', jsonb_build_object('business_key', business_key));
+  END IF;
+
+  v_prev := jsonb_build_object('business_key', business_key, 'level', v_curr_level, 'cash', v_cash, 'cv', v_cv);
+
+  DELETE FROM public.team_businesses
+  WHERE team_businesses.team_id = admin_remove_business.team_id
+    AND team_businesses.business_key = admin_remove_business.business_key;
+
+  IF reason = 'FORCED_SALE' AND credit_resale THEN
+    SELECT cost INTO v_cost FROM public.business_catalog WHERE key = business_key;
+    v_cash := v_cash + v_cost;
+  ELSIF reason = 'CORRECTION' THEN
+    SELECT initial_cv, u1_cv, u2_cv INTO v_initial_cv, v_u1_cv, v_u2_cv
+    FROM public.business_catalog
+    WHERE key = business_key;
+
+    v_cv_deduction := v_initial_cv;
+    IF v_curr_level >= 1 THEN
+      v_cv_deduction := v_cv_deduction + v_u1_cv;
+    END IF;
+    IF v_curr_level >= 2 THEN
+      v_cv_deduction := v_cv_deduction + v_u2_cv;
+    END IF;
+
+    v_cv := greatest(0, v_cv - v_cv_deduction);
+  END IF;
+
+  UPDATE public.teams
+  SET cash = v_cash,
+      cv = v_cv,
+      version = version + 1
+  WHERE id = team_id;
+
+  v_new := jsonb_build_object(
+    'business_key', business_key,
+    'reason', reason,
+    'credit_resale', credit_resale,
+    'cash', v_cash,
+    'cv', v_cv
+  );
+
+  INSERT INTO public.activity_events (
+    room_id,
+    team_id,
+    request_id,
+    type,
+    business_key,
+    prev,
+    new,
+    note,
+    is_correction,
+    actor_id,
+    created_at
+  ) VALUES (
+    v_room_id,
+    team_id,
+    request_id,
+    'BUSINESS_REMOVED',
+    business_key,
+    v_prev,
+    v_new,
+    note,
+    v_is_correction,
+    auth.uid(),
+    public.app_now()
+  );
+
+  RETURN public.get_team_snapshot(team_id);
+END;
+$$;
+
+-- 2. admin_set_bankrupt: Zero cash upon bankruptcy declaration
+CREATE OR REPLACE FUNCTION public.admin_set_bankrupt(
+  team_id uuid,
+  value boolean,
+  expected_version int DEFAULT 0,
+  request_id uuid DEFAULT NULL,
+  note text DEFAULT NULL
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_room_id uuid;
+  v_status public.room_status;
+  v_curr_ver int;
+  v_curr_bankrupt boolean;
+  v_curr_cash int;
+  v_biz RECORD;
+  v_is_correction boolean := false;
+BEGIN
+  IF NOT public.is_admin() THEN
+    PERFORM public.raise_error('NOT_ADMIN');
+  END IF;
+
+  IF request_id IS NOT NULL AND EXISTS (SELECT 1 FROM public.activity_events WHERE activity_events.request_id = admin_set_bankrupt.request_id) THEN
+    RETURN public.get_team_snapshot(team_id);
+  END IF;
+
+  SELECT t.room_id, t.version, t.is_bankrupt, t.cash
+  INTO v_room_id, v_curr_ver, v_curr_bankrupt, v_curr_cash
+  FROM public.teams t
+  WHERE t.id = team_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    PERFORM public.raise_error('ROOM_NOT_FOUND');
+  END IF;
+
+  PERFORM public.expire_if_due(v_room_id);
+  SELECT status INTO v_status FROM public.rooms WHERE id = v_room_id FOR UPDATE;
+
+  IF v_status = 'TIME_EXPIRED' THEN
+    IF note IS NULL OR trim(note) = '' THEN
+      PERFORM public.raise_error('NOTE_REQUIRED');
+    END IF;
+    v_is_correction := true;
+  ELSIF v_status <> 'ACTIVE' THEN
+    PERFORM public.raise_error('ROOM_NOT_EDITABLE', jsonb_build_object('status', v_status));
+  END IF;
+
+  IF v_curr_ver <> expected_version THEN
+    PERFORM public.raise_error('VERSION_CONFLICT', jsonb_build_object('expected_version', expected_version, 'current_version', v_curr_ver));
+  END IF;
+
+  IF NOT value AND (note IS NULL OR trim(note) = '') THEN
+    PERFORM public.raise_error('NOTE_REQUIRED', jsonb_build_object('reason', 'undoing_bankruptcy_requires_note'));
+  END IF;
+
+  IF value THEN
+    -- Liquidate all owned businesses back to the bank
+    FOR v_biz IN SELECT business_key, level FROM public.team_businesses WHERE team_businesses.team_id = admin_set_bankrupt.team_id LOOP
+      DELETE FROM public.team_businesses
+      WHERE team_businesses.team_id = admin_set_bankrupt.team_id
+        AND team_businesses.business_key = v_biz.business_key;
+
+      INSERT INTO public.activity_events (
+        room_id, team_id, type, business_key, prev, new, note, is_correction, actor_id, created_at
+      ) VALUES (
+        v_room_id, team_id, 'BUSINESS_REMOVED', v_biz.business_key, jsonb_build_object('level', v_biz.level), jsonb_build_object('reason', 'BANKRUPTCY'), note, v_is_correction, auth.uid(), public.app_now()
+      );
+    END LOOP;
+
+    UPDATE public.teams
+    SET cash = 0,
+        is_bankrupt = true,
+        version = version + 1
+    WHERE id = team_id;
+  ELSE
+    UPDATE public.teams
+    SET is_bankrupt = false,
+        version = version + 1
+    WHERE id = team_id;
+  END IF;
+
+  INSERT INTO public.activity_events (
+    room_id,
+    team_id,
+    request_id,
+    type,
+    prev,
+    new,
+    note,
+    is_correction,
+    actor_id,
+    created_at
+  ) VALUES (
+    v_room_id,
+    team_id,
+    request_id,
+    'BANKRUPTCY_SET',
+    jsonb_build_object('is_bankrupt', v_curr_bankrupt, 'cash', v_curr_cash),
+    jsonb_build_object('is_bankrupt', value, 'cash', CASE WHEN value THEN 0 ELSE v_curr_cash END),
+    note,
+    v_is_correction,
+    auth.uid(),
+    public.app_now()
+  );
+
+  RETURN public.get_team_snapshot(team_id);
+END;
+$$;
+
+-- 3. admin_adjust: Reject adjustments on bankrupt teams
+CREATE OR REPLACE FUNCTION public.admin_adjust(
+  changes jsonb,
+  label text,
+  note text DEFAULT NULL,
+  request_id uuid DEFAULT NULL
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_room_id uuid;
+  v_status public.room_status;
+  v_is_correction boolean := false;
+  v_group_id uuid := gen_random_uuid();
+  v_item jsonb;
+  v_team_id uuid;
+  v_cash_delta int;
+  v_cv_delta int;
+  v_exp_ver int;
+  v_curr_ver int;
+  v_curr_cash int;
+  v_curr_cv int;
+  v_curr_bankrupt boolean;
+  v_res_cash int;
+  v_res_cv int;
+  v_clamped boolean;
+  v_first boolean := true;
+  v_results jsonb := '[]'::jsonb;
+BEGIN
+  IF NOT public.is_admin() THEN
+    PERFORM public.raise_error('NOT_ADMIN');
+  END IF;
+
+  IF request_id IS NOT NULL AND EXISTS (SELECT 1 FROM public.activity_events WHERE activity_events.request_id = admin_adjust.request_id) THEN
+    RETURN jsonb_build_object('status', 'idempotent_duplicate', 'request_id', request_id);
+  END IF;
+
+  -- Verify room status
+  SELECT t.room_id INTO v_room_id
+  FROM public.teams t
+  WHERE t.id = (changes->0->>'team_id')::uuid;
+
+  IF NOT FOUND THEN
+    PERFORM public.raise_error('ROOM_NOT_FOUND');
+  END IF;
+
+  PERFORM public.expire_if_due(v_room_id);
+
+  SELECT status INTO v_status FROM public.rooms WHERE id = v_room_id FOR UPDATE;
+
+  IF v_status = 'TIME_EXPIRED' THEN
+    IF note IS NULL OR trim(note) = '' THEN
+      PERFORM public.raise_error('NOTE_REQUIRED');
+    END IF;
+    v_is_correction := true;
+  ELSIF v_status <> 'ACTIVE' THEN
+    PERFORM public.raise_error('ROOM_NOT_EDITABLE', jsonb_build_object('status', v_status));
+  END IF;
+
+  -- Phase 1 Validation: lock teams in ID order to prevent deadlocks
+  FOR v_item IN SELECT * FROM jsonb_array_elements(changes) ORDER BY (value->>'team_id')::uuid ASC LOOP
+    v_team_id := (v_item->>'team_id')::uuid;
+    v_cash_delta := coalesce((v_item->>'cash_delta')::int, 0);
+    v_cv_delta := coalesce((v_item->>'cv_delta')::int, 0);
+    v_exp_ver := (v_item->>'expected_version')::int;
+
+    SELECT version, cash, cv, is_bankrupt INTO v_curr_ver, v_curr_cash, v_curr_cv, v_curr_bankrupt
+    FROM public.teams
+    WHERE id = v_team_id
+    FOR UPDATE;
+
+    IF v_curr_bankrupt THEN
+      PERFORM public.raise_error('TEAM_BANKRUPT', jsonb_build_object('team_id', v_team_id));
+    END IF;
+
+    IF v_curr_ver <> v_exp_ver THEN
+      PERFORM public.raise_error('VERSION_CONFLICT', jsonb_build_object(
+        'team_id', v_team_id,
+        'expected_version', v_exp_ver,
+        'current_version', v_curr_ver
+      ));
+    END IF;
+
+    v_res_cash := v_curr_cash + v_cash_delta;
+    IF v_res_cash < 0 THEN
+      PERFORM public.raise_error('INSUFFICIENT_CASH', jsonb_build_object(
+        'team_id', v_team_id,
+        'cash', v_curr_cash,
+        'delta', v_cash_delta,
+        'shortfall', abs(v_res_cash)
+      ));
+    END IF;
+  END LOOP;
+
+  -- Phase 2 Execution
+  FOR v_item IN SELECT * FROM jsonb_array_elements(changes) ORDER BY (value->>'team_id')::uuid ASC LOOP
+    v_team_id := (v_item->>'team_id')::uuid;
+    v_cash_delta := coalesce((v_item->>'cash_delta')::int, 0);
+    v_cv_delta := coalesce((v_item->>'cv_delta')::int, 0);
+
+    SELECT cash, cv INTO v_curr_cash, v_curr_cv FROM public.teams WHERE id = v_team_id;
+
+    v_res_cash := v_curr_cash + v_cash_delta;
+    v_res_cv := v_curr_cv + v_cv_delta;
+    v_clamped := false;
+
+    IF v_res_cv < 0 THEN
+      v_res_cv := 0;
+      v_clamped := true;
+    END IF;
+
+    UPDATE public.teams
+    SET cash = v_res_cash,
+        cv = v_res_cv,
+        version = version + 1
+    WHERE id = v_team_id;
+
+    INSERT INTO public.activity_events (
+      room_id,
+      team_id,
+      group_id,
+      request_id,
+      type,
+      prev,
+      new,
+      note,
+      is_correction,
+      actor_id,
+      created_at
+    ) VALUES (
+      v_room_id,
+      v_team_id,
+      v_group_id,
+      CASE WHEN v_first THEN request_id ELSE NULL END,
+      'ADJUSTMENT',
+      jsonb_build_object('cash', v_curr_cash, 'cv', v_curr_cv),
+      jsonb_build_object('cash', v_res_cash, 'cv', v_res_cv, 'cash_delta', v_cash_delta, 'cv_delta', v_cv_delta, 'clamped', v_clamped),
+      coalesce(label || ': ', '') || coalesce(note, ''),
+      v_is_correction,
+      auth.uid(),
+      public.app_now()
+    );
+
+    v_first := false;
+    v_results := v_results || public.get_team_snapshot(v_team_id);
+  END LOOP;
+
+  RETURN v_results;
+END;
+$$;
+
+-- 4. admin_set_team_values: Reject value override on bankrupt teams
+CREATE OR REPLACE FUNCTION public.admin_set_team_values(
+  team_id uuid,
+  cash int DEFAULT NULL,
+  cv int DEFAULT NULL,
+  expected_version int DEFAULT 0,
+  request_id uuid DEFAULT NULL,
+  note text DEFAULT NULL
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_room_id uuid;
+  v_status public.room_status;
+  v_curr_version int;
+  v_curr_cash int;
+  v_curr_cv int;
+  v_curr_bankrupt boolean;
+  v_is_correction boolean := false;
+  v_prev jsonb;
+  v_new jsonb;
+BEGIN
+  IF NOT public.is_admin() THEN
+    PERFORM public.raise_error('NOT_ADMIN');
+  END IF;
+
+  IF request_id IS NOT NULL AND EXISTS (SELECT 1 FROM public.activity_events WHERE activity_events.request_id = admin_set_team_values.request_id) THEN
+    RETURN public.get_team_snapshot(team_id);
+  END IF;
+
+  SELECT t.room_id INTO v_room_id
+  FROM public.teams t
+  WHERE t.id = team_id;
+
+  IF NOT FOUND THEN
+    PERFORM public.raise_error('ROOM_NOT_FOUND');
+  END IF;
+
+  PERFORM public.expire_if_due(v_room_id);
+
+  SELECT status INTO v_status FROM public.rooms WHERE id = v_room_id FOR UPDATE;
+
+  IF v_status = 'TIME_EXPIRED' THEN
+    IF note IS NULL OR trim(note) = '' THEN
+      PERFORM public.raise_error('NOTE_REQUIRED');
+    END IF;
+    v_is_correction := true;
+  ELSIF v_status <> 'ACTIVE' THEN
+    PERFORM public.raise_error('ROOM_NOT_EDITABLE', jsonb_build_object('status', v_status));
+  END IF;
+
+  SELECT version, teams.cash, teams.cv, teams.is_bankrupt
+  INTO v_curr_version, v_curr_cash, v_curr_cv, v_curr_bankrupt
+  FROM public.teams
+  WHERE id = team_id
+  FOR UPDATE;
+
+  IF v_curr_bankrupt THEN
+    PERFORM public.raise_error('TEAM_BANKRUPT');
+  END IF;
+
+  IF v_curr_version <> expected_version THEN
+    PERFORM public.raise_error('VERSION_CONFLICT', jsonb_build_object(
+      'expected_version', expected_version,
+      'current_version', v_curr_version,
+      'cash', v_curr_cash,
+      'cv', v_curr_cv
+    ));
+  END IF;
+
+  IF cash IS NOT NULL AND cash < 0 THEN
+    PERFORM public.raise_error('INVALID_VALUE', jsonb_build_object('cash', cash));
+  END IF;
+
+  IF cv IS NOT NULL AND cv < 0 THEN
+    PERFORM public.raise_error('INVALID_VALUE', jsonb_build_object('cv', cv));
+  END IF;
+
+  v_prev := jsonb_build_object('cash', v_curr_cash, 'cv', v_curr_cv);
+  v_new := jsonb_build_object('cash', coalesce(cash, v_curr_cash), 'cv', coalesce(cv, v_curr_cv));
+
+  UPDATE public.teams
+  SET cash = coalesce(admin_set_team_values.cash, teams.cash),
+      cv = coalesce(admin_set_team_values.cv, teams.cv),
+      version = version + 1
+  WHERE id = team_id;
+
+  IF cash IS NOT NULL AND cash <> v_curr_cash THEN
+    INSERT INTO public.activity_events (
+      room_id, team_id, request_id, type, prev, new, note, is_correction, actor_id, created_at
+    ) VALUES (
+      v_room_id, team_id, request_id, 'CASH_SET', jsonb_build_object('cash', v_curr_cash), jsonb_build_object('cash', cash), note, v_is_correction, auth.uid(), public.app_now()
+    );
+  END IF;
+
+  IF cv IS NOT NULL AND cv <> v_curr_cv THEN
+    INSERT INTO public.activity_events (
+      room_id, team_id, request_id, type, prev, new, note, is_correction, actor_id, created_at
+    ) VALUES (
+      v_room_id, team_id, CASE WHEN cash IS NOT NULL AND cash <> v_curr_cash THEN NULL ELSE request_id END, 'CV_SET', jsonb_build_object('cv', v_curr_cv), jsonb_build_object('cv', cv), note, v_is_correction, auth.uid(), public.app_now()
+    );
+  END IF;
+
+  RETURN public.get_team_snapshot(team_id);
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.admin_remove_business(uuid, text, text, boolean, int, uuid, text) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.admin_set_bankrupt(uuid, boolean, int, uuid, text) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.admin_adjust(jsonb, text, text, uuid) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.admin_set_team_values(uuid, int, int, int, uuid, text) TO authenticated;
+
+COMMIT;
+
+-- Migration 0018: Lifecycle Deadlock & Schema Reconciliation
+-- 1. Lifecycle Deadlock Resolution: Allow room transition from TIME_EXPIRED back to LOBBY
+--    in fn_check_room_status_transition so matches whose timer expired can be aborted/reset.
+-- 2. Enhanced admin_abort_game: Allow admin_abort_game to be invoked when room status is
+--    either 'ACTIVE' or 'TIME_EXPIRED'.
+-- 3. Redundant Index Pruning: Drop idx_team_claims_team_id since idx_team_claims_one_active_claim_per_team
+--    already enforces uniqueness and covers all lookups on team_id.
+-- 4. Schema Reconciliation: Drop orphaned final_result_businesses if present from legacy iterations.
+
+BEGIN;
+
+-- 1. Update fn_check_room_status_transition to allow TIME_EXPIRED -> LOBBY
+CREATE OR REPLACE FUNCTION public.fn_check_room_status_transition()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = public
+AS $$
+BEGIN
+  IF OLD.status IS DISTINCT FROM NEW.status THEN
+    IF NOT (
+      (OLD.status = 'CREATED' AND NEW.status = 'LOBBY') OR
+      (OLD.status = 'LOBBY' AND NEW.status = 'ACTIVE') OR
+      (OLD.status = 'ACTIVE' AND NEW.status = 'TIME_EXPIRED') OR
+      (OLD.status = 'ACTIVE' AND NEW.status = 'LOBBY') OR
+      (OLD.status = 'TIME_EXPIRED' AND NEW.status = 'FINALIZED') OR
+      (OLD.status = 'TIME_EXPIRED' AND NEW.status = 'LOBBY')
+    ) THEN
+      RAISE EXCEPTION 'INVALID_TRANSITION';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+-- 2. Update admin_abort_game to support both ACTIVE and TIME_EXPIRED room statuses
+CREATE OR REPLACE FUNCTION public.admin_abort_game(
+  p_room_id uuid,
+  note text DEFAULT NULL
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_status public.room_status;
+  v_room jsonb;
+  v_biz RECORD;
+BEGIN
+  IF NOT public.is_admin() THEN
+    PERFORM public.raise_error('NOT_ADMIN');
+  END IF;
+
+  IF note IS NULL OR trim(note) = '' THEN
+    PERFORM public.raise_error('NOTE_REQUIRED');
+  END IF;
+
+  SELECT status INTO v_status
+  FROM public.rooms
+  WHERE id = p_room_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    PERFORM public.raise_error('ROOM_NOT_FOUND');
+  END IF;
+
+  IF v_status NOT IN ('ACTIVE', 'TIME_EXPIRED') THEN
+    PERFORM public.raise_error('INVALID_TRANSITION', jsonb_build_object('from', v_status, 'to', 'LOBBY'));
+  END IF;
+
+  -- Lock teams in deterministic ID order to prevent deadlocks
+  PERFORM 1
+  FROM public.teams
+  WHERE room_id = p_room_id
+  ORDER BY id ASC
+  FOR UPDATE;
+
+  -- Reset room back to LOBBY
+  UPDATE public.rooms
+  SET status = 'LOBBY',
+      started_at = NULL,
+      ends_at = NULL
+  WHERE id = p_room_id;
+
+  -- Record audit events for removed businesses
+  FOR v_biz IN
+    SELECT tb.team_id, tb.business_key, tb.level
+    FROM public.team_businesses tb
+    JOIN public.teams t ON tb.team_id = t.id
+    WHERE t.room_id = p_room_id
+  LOOP
+    INSERT INTO public.activity_events (
+      room_id,
+      team_id,
+      type,
+      business_key,
+      prev,
+      new,
+      note,
+      is_correction,
+      actor_id,
+      created_at
+    ) VALUES (
+      p_room_id,
+      v_biz.team_id,
+      'BUSINESS_REMOVED',
+      v_biz.business_key,
+      jsonb_build_object('level', v_biz.level),
+      jsonb_build_object('reason', 'CORRECTION'),
+      trim(note),
+      true,
+      auth.uid(),
+      public.app_now()
+    );
+  END LOOP;
+
+  -- Delete all team businesses for this room
+  DELETE FROM public.team_businesses
+  WHERE team_id IN (
+    SELECT id FROM public.teams WHERE room_id = p_room_id
+  );
+
+  -- Reset all teams in the room back to LOBBY baseline and increment version
+  UPDATE public.teams
+  SET cash = 1000,
+      cv = 0,
+      is_bankrupt = false,
+      tiebreak_order = NULL,
+      version = version + 1
+  WHERE room_id = p_room_id;
+
+  -- Log the abort event with reset details
+  INSERT INTO public.activity_events (
+    room_id,
+    type,
+    note,
+    prev,
+    new,
+    is_correction,
+    actor_id,
+    created_at
+  ) VALUES (
+    p_room_id,
+    'GAME_ABORTED',
+    trim(note),
+    jsonb_build_object('status', v_status),
+    jsonb_build_object('status', 'LOBBY', 'teams_reset', true),
+    true,
+    auth.uid(),
+    public.app_now()
+  );
+
+  SELECT to_jsonb(r.*) INTO v_room FROM public.rooms r WHERE r.id = p_room_id;
+  RETURN v_room;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.admin_abort_game(uuid, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.admin_abort_game(uuid, text) TO authenticated;
+
+-- 3. Prune redundant index on team_claims
+DROP INDEX IF EXISTS public.idx_team_claims_team_id;
+
+-- 4. Reconcile schema: drop orphaned table if exists
+DROP TABLE IF EXISTS public.final_result_businesses CASCADE;
+
+COMMIT;

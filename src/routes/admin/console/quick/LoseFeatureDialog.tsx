@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Modal, PixelButton } from '../../../../ui';
 import { PreviewTable } from './PreviewTable';
 import { computeLoseFeature, TeamState } from '../../../../domain/quickActions';
+import { safeRandomUUID } from '../../../../lib/uuid';
 
 export interface LoseFeatureDialogProps {
   isOpen: boolean;
@@ -42,7 +43,7 @@ export const LoseFeatureDialog: React.FC<LoseFeatureDialogProps> = ({
       setTeamId(defaultTeamId || teams[0]?.id || '');
       setCustomCv(undefined);
       setNote('');
-      setRequestId(crypto.randomUUID());
+      setRequestId(safeRandomUUID());
       setError(null);
       setIsSubmitting(false);
     }

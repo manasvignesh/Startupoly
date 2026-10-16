@@ -74,11 +74,11 @@ During play, use the quick-action calculator dialogs at the bottom of the admin 
 | Event on Physical Board | Admin Action | Keyboard Shortcut / Flow |
 |---|---|---|
 | **Rent Payment** | Click `RENT (PAY)` | Select paying team, receiving team, and business. Auto-calculates rent based on business level. Click Confirm. |
-| **Pass START Lap** | Click `PASS START` | Select team. Pre-fills ₹200 cash (+ ₹0, ₹250, or ₹500 CV bonus depending on business portfolio). Click Confirm. |
+| **Pass START Lap** | Click `PASS START` | Select team. Pre-fills ₹200 cash (+ ₹0, ₹200, or ₹500 CV bonus depending on business portfolio). Click Confirm. |
 | **Acquire Business** | Click `BUY BIZ` | Select business (1 of 10) from catalog. Auto-charges initial cost and credits initial CV. |
 | **Upgrade Business** | Click `UPGRADE` | Select owned business. Level 0 → 1 or Level 1 → 2. Deducts upgrade fee and increments CV. |
 | **Crisis / Bonus Card** | Click `CARD` | Select `BONUS` or `CRISIS`. Select preset card amount or enter custom amount. |
-| **Forced Sale** | Click `FORCED SALE` | Liquidates an owned business for 50% resale credit when team owes debt. |
+| **Forced Sale** | Click `FORCED SALE` | Liquidates an owned business for 100% base cost resale credit when team owes debt. |
 | **Steal Talent** | Click `STEAL TALENT` | Target team loses ₹100; active team gains ₹100. |
 
 *Team Selection Tip*: Press number keys `1`–`6` or Arrow keys on your laptop keyboard to immediately switch active teams without using the trackpad.

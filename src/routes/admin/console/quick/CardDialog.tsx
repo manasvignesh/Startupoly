@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Modal, PixelButton } from '../../../../ui';
 import { PreviewTable } from './PreviewTable';
 import { computeBonus, computeCrisis, TeamState } from '../../../../domain/quickActions';
+import { safeRandomUUID } from '../../../../lib/uuid';
 
 export interface CardDialogProps {
   isOpen: boolean;
@@ -74,7 +75,7 @@ export const CardDialog: React.FC<CardDialogProps> = ({
       setCustomCash(undefined);
       setCustomCv(undefined);
       setNote('');
-      setRequestId(crypto.randomUUID());
+      setRequestId(safeRandomUUID());
       setError(null);
       setIsSubmitting(false);
     }

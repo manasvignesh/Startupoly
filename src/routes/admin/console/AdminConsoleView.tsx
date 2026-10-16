@@ -32,6 +32,7 @@ import {
 } from './quick';
 import { FinalizePanel } from './FinalizePanel';
 import { ResultView } from './ResultView';
+import { safeRandomUUID } from '../../../lib/uuid';
 
 export interface AdminConsoleViewProps {
   snapshot: AdminRoomSnapshot;
@@ -266,7 +267,7 @@ export const AdminConsoleView: React.FC<AdminConsoleViewProps> = ({
         reason: 'FORCED_SALE',
         credit_resale: true,
         expected_version: expectedVersion,
-        request_id: crypto.randomUUID(),
+        request_id: safeRandomUUID(),
         note,
       });
       const t = snapshot.teams.find((tm) => tm.id === teamId);
@@ -306,7 +307,7 @@ export const AdminConsoleView: React.FC<AdminConsoleViewProps> = ({
         team_id: selectedTeam.id,
         cash: newCash,
         expected_version: selectedTeam.version,
-        request_id: crypto.randomUUID(),
+        request_id: safeRandomUUID(),
         note,
       });
       successToast(`${selectedTeam.name} cash updated.`);
@@ -326,7 +327,7 @@ export const AdminConsoleView: React.FC<AdminConsoleViewProps> = ({
         team_id: selectedTeam.id,
         cv: newCv,
         expected_version: selectedTeam.version,
-        request_id: crypto.randomUUID(),
+        request_id: safeRandomUUID(),
         note,
       });
       successToast(`${selectedTeam.name} CV updated.`);
@@ -354,7 +355,7 @@ export const AdminConsoleView: React.FC<AdminConsoleViewProps> = ({
         business_key: businessKey,
         apply_purchase: applyPurchase,
         expected_version: selectedTeam.version,
-        request_id: crypto.randomUUID(),
+        request_id: safeRandomUUID(),
         note,
       });
       successToast(`Added business to ${selectedTeam.name}.`);
@@ -385,7 +386,7 @@ export const AdminConsoleView: React.FC<AdminConsoleViewProps> = ({
         new_level: newLevel,
         apply_upgrade: applyUpgrade,
         expected_version: selectedTeam.version,
-        request_id: crypto.randomUUID(),
+        request_id: safeRandomUUID(),
         note,
       });
       successToast(`Upgraded ${businessKey} for ${selectedTeam.name}.`);
@@ -414,7 +415,7 @@ export const AdminConsoleView: React.FC<AdminConsoleViewProps> = ({
         new_level: newLevel,
         apply_upgrade: false,
         expected_version: selectedTeam.version,
-        request_id: crypto.randomUUID(),
+        request_id: safeRandomUUID(),
         note,
       });
       successToast(`Corrected ${businessKey} level for ${selectedTeam.name}.`);
@@ -445,7 +446,7 @@ export const AdminConsoleView: React.FC<AdminConsoleViewProps> = ({
         reason,
         credit_resale: creditResale,
         expected_version: selectedTeam.version,
-        request_id: crypto.randomUUID(),
+        request_id: safeRandomUUID(),
         note,
       });
       successToast(`Removed ${businessKey} from ${selectedTeam.name}.`);
@@ -471,7 +472,7 @@ export const AdminConsoleView: React.FC<AdminConsoleViewProps> = ({
         team_id: selectedTeam.id,
         value,
         expected_version: selectedTeam.version,
-        request_id: crypto.randomUUID(),
+        request_id: safeRandomUUID(),
         note,
       });
       successToast(
@@ -512,7 +513,7 @@ export const AdminConsoleView: React.FC<AdminConsoleViewProps> = ({
         lastUpdated={lastUpdated}
         onRefetch={handleManualRefetch}
         isRefetching={isRefetching}
-        onAbortGame={isActive ? handleOpenAbort : undefined}
+        onAbortGame={(isActive || isTimeExpired) ? handleOpenAbort : undefined}
       />
 
       {/* Responsive width notice for small devices (< 1024px) */}

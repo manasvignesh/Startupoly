@@ -410,4 +410,33 @@ describe('AdminConsoleView', () => {
       expect(screen.getAllByText(/NOTE_REQUIRED/i).length).toBeGreaterThanOrEqual(1);
     });
   });
+
+  it('allows aborting game when status is TIME_EXPIRED', async () => {
+    vi.mocked(rpcModule.rpcAdminAbortGame).mockResolvedValue({} as any);
+
+    renderComponent({
+      snapshot: {
+        ...mockSnapshot,
+        room: {
+          ...mockSnapshot.room,
+          status: 'TIME_EXPIRED',
+        },
+      },
+    });
+
+    const abortBtn = screen.getByRole('button', { name: /ABORT GAME/i });
+    expect(abortBtn).toBeInTheDocument();
+    fireEvent.click(abortBtn);
+
+    expect(screen.getByText(/ABORT GAME — RETURN TO LOBBY/i)).toBeInTheDocument();
+    const noteInput = screen.getByPlaceholderText(/Accidental start/i);
+    fireEvent.change(noteInput, { target: { value: 'Expired game restart' } });
+
+    const confirmBtn = screen.getByRole('button', { name: /CONFIRM ABORT/i });
+    fireEvent.click(confirmBtn);
+
+    await waitFor(() => {
+      expect(rpcModule.rpcAdminAbortGame).toHaveBeenCalledWith('room-1', 'Expired game restart');
+    });
+  });
 });
