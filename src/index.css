@@ -2509,3 +2509,136 @@
   will-change: transform;
 }
 
+
+/* ========================================================================= */
+/* PROPERTY DEED CARD UNFOLD & SHINE ANIMATIONS                              */
+/* High-polish collectible 3D title deed reveal with holographic shimmer     */
+/* ========================================================================= */
+@keyframes deed-card-unfold {
+  0% {
+    opacity: 0;
+    transform: perspective(1200px) rotateY(85deg) rotateX(25deg) translateY(90px) scale(0.35);
+    filter: brightness(2) drop-shadow(0 0 35px rgba(255, 215, 0, 0.9));
+  }
+  48% {
+    opacity: 1;
+    transform: perspective(1200px) rotateY(-10deg) rotateX(-5deg) translateY(-14px) scale(1.06);
+    filter: brightness(1.2) drop-shadow(0 20px 35px rgba(0, 0, 0, 0.7));
+  }
+  75% {
+    transform: perspective(1200px) rotateY(4deg) rotateX(2deg) translateY(4px) scale(0.98);
+    filter: brightness(1.05);
+  }
+  100% {
+    opacity: 1;
+    transform: perspective(1200px) rotateY(0deg) rotateX(0deg) translateY(0) scale(1);
+    filter: brightness(1);
+  }
+}
+
+@keyframes deed-card-float {
+  0%, 100% {
+    transform: translateY(0px) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-6px) rotate(0.4deg);
+  }
+}
+
+@keyframes deed-card-shine {
+  0% {
+    transform: translateX(-180%) skewX(-25deg);
+    opacity: 0;
+  }
+  20% {
+    opacity: 0.95;
+  }
+  60% {
+    opacity: 0.95;
+  }
+  100% {
+    transform: translateX(280%) skewX(-25deg);
+    opacity: 0;
+  }
+}
+
+@keyframes deed-sunburst-spin {
+  0% {
+    transform: rotate(0deg) scale(1);
+    opacity: 0.45;
+  }
+  50% {
+    transform: rotate(180deg) scale(1.15);
+    opacity: 0.75;
+  }
+  100% {
+    transform: rotate(360deg) scale(1);
+    opacity: 0.45;
+  }
+}
+
+@keyframes deed-stamp-slam {
+  0% {
+    opacity: 0;
+    transform: scale(3.5) rotate(-32deg);
+  }
+  55% {
+    opacity: 1;
+    transform: scale(0.9) rotate(-11deg);
+  }
+  75% {
+    transform: scale(1.08) rotate(-13deg);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(-12deg);
+  }
+}
+
+@keyframes deed-particle-rise {
+  0% {
+    opacity: 0;
+    transform: translateY(20px) scale(0.5) rotate(0deg);
+  }
+  30% {
+    opacity: 1;
+  }
+  80% {
+    opacity: 0.9;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-80px) scale(1.15) rotate(180deg);
+  }
+}
+
+.anim-deed-unfold {
+  animation: deed-card-unfold 0.85s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  will-change: transform, opacity, filter;
+  transform-style: preserve-3d;
+}
+
+.anim-deed-float {
+  animation: deed-card-float 3.4s ease-in-out infinite;
+  will-change: transform;
+}
+
+.anim-deed-shine {
+  animation: deed-card-shine 2.4s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+.anim-deed-halo {
+  animation: deed-sunburst-spin 22s linear infinite;
+  will-change: transform, opacity;
+}
+
+.anim-deed-stamp {
+  animation: deed-stamp-slam 0.45s 0.48s cubic-bezier(0.18, 0.89, 0.32, 1.28) both;
+  will-change: transform, opacity;
+}
+
+.anim-deed-particle {
+  animation: deed-particle-rise 2.8s ease-out infinite;
+  will-change: transform, opacity;
+}

@@ -21,7 +21,7 @@ describe('AddBusinessDialog', () => {
     fireEvent.click(screen.getByText('EdTech'));
     expect(screen.getByRole('button', { name: /CONFIRM ACQUISITION/i })).not.toBeDisabled();
 
-    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(screen.getByLabelText(/Apply purchase/i));
     expect(screen.getByRole('button', { name: /CONFIRM ACQUISITION/i })).toBeDisabled();
     expect(screen.getByText(/NOTE REQUIRED \(MANUAL ENTRY\)/i)).toBeInTheDocument();
 
@@ -34,5 +34,19 @@ describe('AddBusinessDialog', () => {
     render(<AddBusinessDialog isOpen onClose={vi.fn()} team={t} allTeams={[t]} onSubmit={vi.fn()} isTimeExpired={false} />);
     expect(screen.getByText(/business cap \(2\/2\)/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /CONFIRM ACQUISITION/i })).toBeDisabled();
+  });
+
+  it('restricts options to only the landed property when team lands on a business space', () => {
+    // board_position: 1 is AI / DeepTech (cost 500)
+    const t = team({ board_position: 1 });
+    render(<AddBusinessDialog isOpen onClose={vi.fn()} team={t} allTeams={[t]} onSubmit={vi.fn()} isTimeExpired={false} />);
+
+    expect(screen.getByText(/LANDED ON: AI \/ DEEPTECH/i)).toBeInTheDocument();
+    expect(screen.getByText('AI / DeepTech')).toBeInTheDocument();
+    // EdTech and SaaS should NOT be in the restricted list
+    expect(screen.queryByText('EdTech')).toBeNull();
+    expect(screen.queryByText('SaaS')).toBeNull();
+    // Pre-selected and enabled to purchase immediately
+    expect(screen.getByRole('button', { name: /CONFIRM ACQUISITION/i })).not.toBeDisabled();
   });
 });

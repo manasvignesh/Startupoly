@@ -7,6 +7,9 @@ import { ActiveDashboardView } from './ActiveDashboardView';
 import { GameOverView } from './GameOverView';
 import { FinalBoardView } from './FinalBoardView';
 import { TeamScene } from './TeamScene';
+import { PropertySoldModal } from './PropertySoldModal';
+import { useRoomBroadcast, PropertySoldEvent } from '../../data/broadcast';
+import { STORAGE_KEY_TEAM_CLAIM } from '../../data/useMyTeam';
 
 export const TeamDashboardPage: React.FC = () => {
   const {
@@ -21,6 +24,52 @@ export const TeamDashboardPage: React.FC = () => {
     wasClaimReleased,
     isSessionLost,
   } = useMyTeam();
+
+  const [soldEvent, setSoldEvent] = React.useState<PropertySoldEvent | null>(null);
+
+  // Retrieve room code from active team claim in localStorage
+  const roomCode = React.useMemo(() => {
+    try {
+      if (typeof window !== 'undefined') {
+        const raw = localStorage.getItem(STORAGE_KEY_TEAM_CLAIM);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          return parsed?.code as string | undefined;
+        }
+      }
+    } catch {}
+    return undefined;
+  }, []);
+
+  // Listen to Supabase Realtime broadcast for any property acquired in the room
+  useRoomBroadcast(roomCode, (event) => {
+    setSoldEvent(event);
+  });
+
+  // Dual-layer fallback: if own team businesses array increases and broadcast wasn't caught
+  const prevBizCountRef = React.useRef<number | null>(null);
+  React.useEffect(() => {
+    if (!state?.businesses) return;
+    if (prevBizCountRef.current !== null && state.businesses.length > prevBizCountRef.current) {
+      const newestBiz = state.businesses[state.businesses.length - 1];
+      if (newestBiz) {
+        setSoldEvent((current) => {
+          if (current?.businessKey === newestBiz.business_key && Date.now() - current.timestamp < 6000) {
+            return current;
+          }
+          return {
+            teamName: state.team.name,
+            teamColor: state.team.color,
+            businessKey: newestBiz.business_key,
+            businessName: newestBiz.name,
+            cost: newestBiz.cost,
+            timestamp: Date.now(),
+          };
+        });
+      }
+    }
+    prevBizCountRef.current = state.businesses.length;
+  }, [state?.businesses, state?.team.name, state?.team.color]);
 
   // Prevent accidental gestures or browser reload quitting active match
   React.useEffect(() => {
@@ -146,6 +195,9 @@ export const TeamDashboardPage: React.FC = () => {
 
       {/* Brick Ground Base Strip */}
       <div aria-hidden="true" className="relative z-10 h-6 nes-brick-pattern border-t-4 border-brand-navy" />
+
+      {/* Property Acquired Celebration Modal */}
+      <PropertySoldModal event={soldEvent} onDismiss={() => setSoldEvent(null)} />
     </div>
   );
 };

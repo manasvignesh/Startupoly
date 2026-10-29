@@ -44,7 +44,10 @@ import { safeRandomUUID } from '../../../lib/uuid';
 import { FinalizePanel } from './FinalizePanel';
 import { ResultView } from './ResultView';
 import { LiveBoardPanel } from './LiveBoardPanel';
-import { BoardSpace } from '../../../domain/board';
+import { BoardSpace, BOARD_SPACES } from '../../../domain/board';
+import { broadcastPropertySold, PropertySoldEvent } from '../../../data/broadcast';
+import { PropertySoldModal } from '../../team/PropertySoldModal';
+import { OFFICIAL_BUSINESSES } from '../../../domain/economy';
 
 export interface AdminConsoleViewProps {
   snapshot: AdminRoomSnapshot;
@@ -63,6 +66,7 @@ export const AdminConsoleView: React.FC<AdminConsoleViewProps> = ({
   isStale = false,
   staleAgeSeconds = 0,
 }) => {
+  const [soldEvent, setSoldEvent] = useState<PropertySoldEvent | null>(null);
   const [selectedTeamId, setSelectedTeamId] = useState<string>(
     snapshot.teams[0]?.id || ''
   );
@@ -510,13 +514,46 @@ export const AdminConsoleView: React.FC<AdminConsoleViewProps> = ({
   }) => {
     if (!selectedTeam) return;
     try {
+      let currentVersion = selectedTeam.version;
+
+      // In server-authoritative rules, a team must be standing on the business space to purchase it.
+      // If the team has not moved yet on the Live Board, auto-move token to the business space first.
+      const bizSpace = BOARD_SPACES.find((s) => s.businessKey === businessKey)?.index;
+      const currentPos = selectedTeam.board_position ?? 0;
+      if (applyPurchase && bizSpace !== undefined && currentPos !== bizSpace) {
+        const steps = (bizSpace - currentPos + 22) % 22;
+        if (steps > 0) {
+          try {
+            await rpcAdminMoveTeam({
+              team_id: selectedTeam.id,
+              steps,
+              expected_version: currentVersion,
+            });
+            currentVersion += 1;
+          } catch (moveErr) {
+            console.warn('[AddBusiness] Auto-move failed, proceeding with add business:', moveErr);
+          }
+        }
+      }
+
       await rpcAdminAddBusiness({
         team_id: selectedTeam.id,
         business_key: businessKey,
         apply_purchase: applyPurchase,
-        expected_version: selectedTeam.version,
+        expected_version: currentVersion,
         note,
       });
+      const biz = OFFICIAL_BUSINESSES.find((b) => b.key === businessKey);
+      const eventPayload: PropertySoldEvent = {
+        teamName: selectedTeam.name,
+        teamColor: selectedTeam.color,
+        businessKey,
+        businessName: biz?.name || businessKey,
+        cost: biz?.cost || 0,
+        timestamp: Date.now(),
+      };
+      setSoldEvent(eventPayload);
+      void broadcastPropertySold(snapshot.room.code, eventPayload);
       successToast(`Added business to ${selectedTeam.name}.`);
       triggerFlash(selectedTeam.id, 'up');
       await onRefetch();
@@ -1308,6 +1345,9 @@ export const AdminConsoleView: React.FC<AdminConsoleViewProps> = ({
 
       {/* 5. NES Ground Pattern */}
       <div className="h-8 nes-brick-pattern border-t-4 border-brand-navy" />
+
+      {/* Property Acquired 3D Title Deed Card */}
+      <PropertySoldModal event={soldEvent} onDismiss={() => setSoldEvent(null)} />
     </div>
   );
 };
