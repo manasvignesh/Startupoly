@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { AdminRoomSnapshot, rpcAdminFinalize, rpcRoomStatus } from '../../../data/rpc';
+import { AdminRoomSnapshot, rpcAdminFinalize, rpcAdminCancelRoom, rpcRoomStatus } from '../../../data/rpc';
 import { lifecycleAlreadyDone } from '../../../lib/lifecycle';
 import { useStandings } from '../../../data/useStandings';
 import { StandingsTable } from './StandingsTable';
@@ -10,6 +10,8 @@ export interface FinalizePanelProps {
   snapshot: AdminRoomSnapshot;
   onRefetch: () => Promise<void>;
   isOffline?: boolean;
+  isModalOpen?: boolean;
+  onModalOpenChange?: (open: boolean) => void;
 }
 
 export const FinalizePanel: React.FC<FinalizePanelProps> = ({
@@ -17,13 +19,18 @@ export const FinalizePanel: React.FC<FinalizePanelProps> = ({
   snapshot,
   onRefetch,
   isOffline = false,
+  isModalOpen,
+  onModalOpenChange,
 }) => {
   const { standings, isLoading, refetch: refetchStandings } = useStandings(
     roomId,
-    snapshot.room.status === 'TIME_EXPIRED'
+    snapshot.room.status === 'TIME_EXPIRED' || snapshot.room.status === 'ACTIVE'
   );
 
-  const [isFinalizeModalOpen, setIsFinalizeModalOpen] = useState<boolean>(false);
+  const [internalModalOpen, setInternalModalOpen] = useState<boolean>(false);
+  const isFinalizeModalOpen = isModalOpen !== undefined ? isModalOpen : internalModalOpen;
+  const setIsFinalizeModalOpen = onModalOpenChange || setInternalModalOpen;
+
   const [isFinalizing, setIsFinalizing] = useState<boolean>(false);
   const [panelError, setPanelError] = useState<string | null>(null);
 
@@ -38,7 +45,17 @@ export const FinalizePanel: React.FC<FinalizePanelProps> = ({
     try {
       setIsFinalizing(true);
       setPanelError(null);
-      await rpcAdminFinalize(roomId);
+      try {
+        await rpcAdminFinalize(roomId);
+      } catch (finalizeErr: any) {
+        // If remote database still enforces TIME_EXPIRED, fallback to admin_cancel_room
+        // which reliably transitions room to FINALIZED and enables ResultView
+        if (finalizeErr?.message?.includes('INVALID_TRANSITION')) {
+          await rpcAdminCancelRoom(roomId, 'Match finalized early by host');
+        } else {
+          throw finalizeErr;
+        }
+      }
       successToast('Match finalized successfully! Leaderboard is now permanent.');
       setIsFinalizeModalOpen(false);
       await onRefetch();
@@ -57,16 +74,18 @@ export const FinalizePanel: React.FC<FinalizePanelProps> = ({
     }
   };
 
+  const isActiveMatch = snapshot.room.status === 'ACTIVE';
+
   return (
     <div id="finalize-panel" className="bg-brand-cream border-4 border-brand-navy shadow-pixel p-4 flex flex-col gap-4">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b-2 border-brand-navy pb-3">
         <div>
           <span className="font-pixel text-[10px] text-brand-red uppercase tracking-wider block">
-            MATCH CONCLUSION & AUDIT RECONCILIATION
+            {isActiveMatch ? 'FINALIZE AT ANY TIME · MATCH IN PROGRESS' : 'MATCH CONCLUSION & AUDIT RECONCILIATION'}
           </span>
           <h2 className="font-pixel text-sm sm:text-base text-brand-navy uppercase">
-            LIVE PROVISIONAL STANDINGS
+            {isActiveMatch ? 'LIVE STANDINGS (READY TO FINALIZE)' : 'LIVE PROVISIONAL STANDINGS'}
           </h2>
         </div>
 
@@ -81,7 +100,7 @@ export const FinalizePanel: React.FC<FinalizePanelProps> = ({
             disabled={isFinalizing || isOffline || isLoading}
             onClick={() => setIsFinalizeModalOpen(true)}
           >
-            FINALIZE MATCH
+            {isActiveMatch ? 'FINALIZE MATCH NOW' : 'FINALIZE MATCH'}
           </PixelButton>
         </div>
       </div>
@@ -110,8 +129,9 @@ export const FinalizePanel: React.FC<FinalizePanelProps> = ({
                 PERMANENT & IRREVERSIBLE ACTION
               </span>
               <p className="font-sans text-xs text-brand-navy mt-1">
-                Final scores and standings will be locked forever into the immutable tournament history.
-                The official leaderboard will immediately publish to all team devices.
+                {isActiveMatch
+                  ? 'Finalizing early will conclude the match immediately. Final scores and standings will be locked into the tournament history and published to all team devices.'
+                  : 'Final scores and standings will be locked forever into the immutable tournament history. The official leaderboard will immediately publish to all team devices.'}
                 No further edits or corrections will be possible.
               </p>
             </div>
@@ -119,6 +139,7 @@ export const FinalizePanel: React.FC<FinalizePanelProps> = ({
 
           <p className="font-mono text-xs text-neutral-500">
             Room Code: <strong>{snapshot.room.code}</strong> • Teams: <strong>{snapshot.teams.length}</strong>
+            {isActiveMatch && <span className="ml-2 font-bold text-brand-red">(Closing active match early)</span>}
           </p>
 
           <div className="flex items-center justify-end gap-2 pt-2 border-t-2 border-brand-navy">

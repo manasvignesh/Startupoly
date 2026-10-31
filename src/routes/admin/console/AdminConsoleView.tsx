@@ -44,7 +44,8 @@ import { safeRandomUUID } from '../../../lib/uuid';
 import { FinalizePanel } from './FinalizePanel';
 import { ResultView } from './ResultView';
 import { LiveBoardPanel } from './LiveBoardPanel';
-import { BoardSpace, BOARD_SPACES } from '../../../domain/board';
+import { BoardSpace, BOARD_SPACES, TOTAL_BOARD_SPACES, getBoardSpace } from '../../../domain/board';
+import { computeRent } from '../../../domain/quickActions';
 import { broadcastPropertySold, PropertySoldEvent } from '../../../data/broadcast';
 import { PropertySoldModal } from '../../team/PropertySoldModal';
 import { OFFICIAL_BUSINESSES } from '../../../domain/economy';
@@ -96,6 +97,7 @@ export const AdminConsoleView: React.FC<AdminConsoleViewProps> = ({
 
   // Quick actions modal state
   const [isRentOpen, setIsRentOpen] = useState<boolean>(false);
+  const [rentDefaultBusinessKey, setRentDefaultBusinessKey] = useState<string | undefined>(undefined);
   const [isStealOpen, setIsStealOpen] = useState<boolean>(false);
   const [isCardOpen, setIsCardOpen] = useState<boolean>(false);
   const [cardMode, setCardMode] = useState<'BONUS' | 'CRISIS'>('BONUS');
@@ -132,8 +134,9 @@ export const AdminConsoleView: React.FC<AdminConsoleViewProps> = ({
   const [abortError, setAbortError] = useState<string | null>(null);
 
   // Standings & Time Over states
-  const { standings } = useStandings(snapshot.room.id, isTimeExpired);
+  const { standings } = useStandings(snapshot.room.id, true);
   const [isTimeOverModalOpen, setIsTimeOverModalOpen] = useState<boolean>(false);
+  const [isFinalizeModalOpen, setIsFinalizeModalOpen] = useState<boolean>(false);
   const [isExtendingTime, setIsExtendingTime] = useState<boolean>(false);
   const hasTriggeredTimeOverPopupRef = React.useRef<boolean>(false);
 
@@ -311,6 +314,9 @@ export const AdminConsoleView: React.FC<AdminConsoleViewProps> = ({
       } else if (key === 'p') {
         e.preventDefault();
         setIsPitchTimerOpen(true);
+      } else if (key === 'f') {
+        e.preventDefault();
+        setIsFinalizeModalOpen(true);
       } else if (key === 'w') {
         e.preventDefault();
         setIsWildcardOpen(true);
@@ -521,7 +527,7 @@ export const AdminConsoleView: React.FC<AdminConsoleViewProps> = ({
       const bizSpace = BOARD_SPACES.find((s) => s.businessKey === businessKey)?.index;
       const currentPos = selectedTeam.board_position ?? 0;
       if (applyPurchase && bizSpace !== undefined && currentPos !== bizSpace) {
-        const steps = (bizSpace - currentPos + 22) % 22;
+        const steps = (bizSpace - currentPos + 24) % 24;
         if (steps > 0) {
           try {
             await rpcAdminMoveTeam({
@@ -682,14 +688,58 @@ export const AdminConsoleView: React.FC<AdminConsoleViewProps> = ({
 
   const handleBoardMove = async (team: AdminRoomSnapshot['teams'][number], steps: number) => {
     try {
-      await rpcAdminMoveTeam({
+      const currentPos = team.board_position ?? 0;
+      const rawTarget = currentPos + steps;
+      const passedStart = rawTarget >= TOTAL_BOARD_SPACES;
+
+      const res = await rpcAdminMoveTeam({
         team_id: team.id,
         steps,
         expected_version: team.version,
       });
-      successToast(`${team.name} moved ${steps} space${steps === 1 ? '' : 's'}.`);
+
+      let updatedVersion = (res?.version ?? team.version + 1);
+      let rewardAdded = false;
+
+      if (res && typeof (res as any).start_reward === 'number' && (res as any).start_reward > 0) {
+        rewardAdded = true;
+      } else if (passedStart) {
+        // Fallback: if database did not credit 200 (older migration), automatically credit +200:
+        try {
+          await rpcAdminAdjust({
+            changes: [{ team_id: team.id, cash_delta: 200, expected_version: updatedVersion }],
+            label: 'START',
+            note: 'Passed START (+₹200)',
+          });
+          rewardAdded = true;
+          updatedVersion += 1;
+        } catch (adjustErr) {
+          console.warn('[handleBoardMove] Fallback START cash reward failed:', adjustErr);
+        }
+      }
+
+      if (passedStart || rewardAdded) {
+        successToast(`🎉 ${team.name} passed START! +₹200 added to treasury.`);
+      } else {
+        successToast(`${team.name} moved ${steps} space${steps === 1 ? '' : 's'}.`);
+      }
+
       setSelectedTeamId(team.id);
       await onRefetch();
+
+      // Check if team landed on an opponent's business:
+      const nextPos = (currentPos + steps) % TOTAL_BOARD_SPACES;
+      const targetSpace = getBoardSpace(nextPos);
+      if (targetSpace.type === 'BUSINESS' && targetSpace.businessKey) {
+        const ownerTeam = snapshot.teams.find((t) => t.id !== team.id && t.businesses.some((b) => b.business_key === targetSpace.businessKey));
+        if (ownerTeam) {
+          const rentPreview = computeRent(team, targetSpace.businessKey, ownerTeam);
+          const rentAmount = rentPreview.changes[1]?.cashDelta ?? (rentPreview.changes[0]?.cashDelta ? Math.abs(rentPreview.changes[0].cashDelta) : 0);
+          errorToast(`🚨 ${team.name} landed on ${targetSpace.name} (Owned by ${ownerTeam.name})! Rent due: ₹${rentAmount.toLocaleString('en-IN')}`);
+          setRentDefaultBusinessKey(targetSpace.businessKey);
+          setIsRentOpen(true);
+        }
+      }
     } catch (err: any) {
       if (err?.code === 'PGRST202') {
         errorToast('Live Board is not installed on this game server yet. Apply the latest database migration, then reload.');
@@ -702,8 +752,34 @@ export const AdminConsoleView: React.FC<AdminConsoleViewProps> = ({
 
   const handleResolveBoardSpace = (space: BoardSpace) => {
     switch (space.type) {
-      case 'START': infoToast('START is paid automatically when a token reaches or passes it.'); break;
-      case 'BUSINESS': setIsAddOpen(true); break;
+      case 'START':
+        infoToast('START is paid automatically when a token reaches or passes it (+₹200).');
+        break;
+      case 'BUSINESS': {
+        if (space.businessKey) {
+          const ownerTeam = snapshot.teams.find((t) => t.businesses.some((b) => b.business_key === space.businessKey));
+          if (ownerTeam && ownerTeam.id !== selectedTeam.id) {
+            // Owned by another team! Directly open Rent Dialog pre-filled!
+            setRentDefaultBusinessKey(space.businessKey);
+            setIsRentOpen(true);
+            return;
+          }
+          if (ownerTeam && ownerTeam.id === selectedTeam.id) {
+            // Owned by self! Open Business Upgrade dialog if not max level
+            const biz = ownerTeam.businesses.find((b) => b.business_key === space.businessKey);
+            if (biz) {
+              if (biz.level >= 2) {
+                infoToast(`${biz.name} is already at max level (Level 2).`);
+                return;
+              }
+              setUpgradeBizKey(biz.business_key);
+              return;
+            }
+          }
+        }
+        setIsAddOpen(true);
+        break;
+      }
       case 'BONUS': setCardMode('BONUS'); setIsCardOpen(true); break;
       case 'CRISIS': setCardMode('CRISIS'); setIsCardOpen(true); break;
       case 'WILDCARD': setIsWildcardOpen(true); break;
@@ -740,6 +816,7 @@ export const AdminConsoleView: React.FC<AdminConsoleViewProps> = ({
         isRefetching={isRefetching}
         onExtendTenMinutes={handleExtendTenMinutes}
         isExtendingTime={isExtendingTime}
+        onFinalizeMatch={() => setIsFinalizeModalOpen(true)}
       />
 
       {/* QUICK COMMAND STRIP */}
@@ -761,6 +838,15 @@ export const AdminConsoleView: React.FC<AdminConsoleViewProps> = ({
             className="font-pixel text-[10px] bg-purple-600 text-white px-2.5 py-1.5 border-2 border-brand-navy shadow-pixel-sm hover:bg-purple-500 active:translate-y-0.5 transition-colors uppercase flex items-center gap-1 cursor-pointer"
           >
             <span>🎲</span> WILDCARD [W]
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setIsFinalizeModalOpen(true)}
+            title="Finalize match and lock tournament results at any time"
+            className="font-pixel text-[10px] bg-brand-gold text-brand-navy px-3 py-1.5 border-2 border-brand-navy shadow-pixel-sm hover:bg-yellow-400 active:translate-y-0.5 transition-colors uppercase font-bold flex items-center gap-1 cursor-pointer"
+          >
+            <span>🏆</span> FINALIZE MATCH
           </button>
 
           {lastUndoableAction && (
@@ -853,7 +939,7 @@ export const AdminConsoleView: React.FC<AdminConsoleViewProps> = ({
               type="button"
               onClick={() => {
                 setIsTimeOverModalOpen(false);
-                document.getElementById('finalize-panel')?.scrollIntoView({ behavior: 'smooth' });
+                setIsFinalizeModalOpen(true);
               }}
               className="font-pixel text-xs bg-brand-navy text-brand-gold px-3.5 py-1.5 border-2 border-brand-navy shadow-pixel-sm hover:bg-neutral-800 active:translate-y-0.5 cursor-pointer uppercase font-bold flex items-center gap-1.5 transition-all"
             >
@@ -1085,14 +1171,14 @@ export const AdminConsoleView: React.FC<AdminConsoleViewProps> = ({
           {/* Match controls: lifecycle actions, kept apart from team operations */}
           <section aria-label="Match controls" className="border-4 border-brand-red bg-status-danger-bg/40 p-3 flex flex-col gap-3">
             <h2 className="font-pixel text-xs uppercase tracking-wider text-brand-red">MATCH CONTROLS</h2>
-          {isTimeExpired && (
-            <FinalizePanel
-              roomId={snapshot.room.id}
-              snapshot={snapshot}
-              onRefetch={onRefetch}
-              isOffline={isOffline}
-            />
-          )}
+          <FinalizePanel
+            roomId={snapshot.room.id}
+            snapshot={snapshot}
+            onRefetch={onRefetch}
+            isOffline={isOffline}
+            isModalOpen={isFinalizeModalOpen}
+            onModalOpenChange={setIsFinalizeModalOpen}
+          />
 
             {isActive && (
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1165,9 +1251,13 @@ export const AdminConsoleView: React.FC<AdminConsoleViewProps> = ({
       {/* QUICK ACTIONS MODALS */}
       <RentDialog
         isOpen={isRentOpen}
-        onClose={() => setIsRentOpen(false)}
+        onClose={() => {
+          setIsRentOpen(false);
+          setRentDefaultBusinessKey(undefined);
+        }}
         teams={snapshot.teams}
         defaultPayerId={selectedTeam.id}
+        defaultBusinessKey={rentDefaultBusinessKey}
         isTimeExpired={isTimeExpired}
         onSubmit={handleChargeRent}
         onDoForcedSale={handleDoForcedSale}
@@ -1239,7 +1329,7 @@ export const AdminConsoleView: React.FC<AdminConsoleViewProps> = ({
         onExtendTenMinutes={handleExtendTenMinutes}
         onOpenFinalize={() => {
           setIsTimeOverModalOpen(false);
-          document.getElementById('finalize-panel')?.scrollIntoView({ behavior: 'smooth' });
+          setIsFinalizeModalOpen(true);
         }}
         isExtending={isExtendingTime}
       />

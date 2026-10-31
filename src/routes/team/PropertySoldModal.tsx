@@ -76,7 +76,7 @@ export const PropertySoldModal: React.FC<PropertySoldModalProps> = ({ event, onD
       {/* 3D Unfolding Title Deed Card Entrance */}
       <div className="anim-deed-unfold w-full max-w-[340px] sm:max-w-[380px] z-10" onClick={(e) => e.stopPropagation()}>
         {/* Hover / Levitation Float Wrapper */}
-        <div className="anim-deed-float relative w-full bg-gradient-to-b from-[#FFFDF5] via-[#FFF9E6] to-[#F7EFC8] border-[4px] border-[#F59E0B] ring-2 ring-[#78350F] shadow-[0_0_35px_rgba(245,158,11,0.55),0_25px_60px_rgba(0,0,0,0.85)] text-center flex flex-col items-center overflow-hidden p-3 sm:p-4 gap-2.5">
+        <div className="anim-deed-float relative w-full bg-brand-cream border-4 border-brand-navy ring-4 ring-brand-gold/80 shadow-[0_16px_48px_rgba(0,0,0,0.7),0_0_30px_rgba(255,204,0,0.4)] text-center flex flex-col items-center overflow-hidden p-3 sm:p-4 gap-2.5">
           {/* Continuous Prismatic Rainbow Holographic Foil Sweeping Shine */}
           <div
             aria-hidden="true"
@@ -96,7 +96,7 @@ export const PropertySoldModal: React.FC<PropertySoldModalProps> = ({ event, onD
           {/* Card Header Strip: Monopoly Title Deed Style */}
           <div
             className="w-full py-2 px-3 border-2 border-brand-navy shadow-pixel-sm flex flex-col items-center gap-0.5 text-white relative overflow-hidden"
-            style={{ backgroundColor: event.teamColor || '#102040' }}
+            style={{ backgroundColor: event.teamColor || 'var(--color-navy-base)' }}
           >
             {/* Subtle inner gold accent line */}
             <div className="absolute inset-x-0 top-0 h-[2px] bg-brand-gold/60" />

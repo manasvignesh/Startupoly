@@ -9,6 +9,7 @@ export interface RentDialogProps {
   onClose: () => void;
   teams: TeamState[];
   defaultPayerId?: string;
+  defaultBusinessKey?: string;
   isTimeExpired: boolean;
   /** The server derives the owner and the amount; only identities and versions are sent. */
   onSubmit: (params: {
@@ -28,6 +29,7 @@ export const RentDialog: React.FC<RentDialogProps> = ({
   onClose,
   teams,
   defaultPayerId,
+  defaultBusinessKey,
   isTimeExpired,
   onSubmit,
   onDoForcedSale,
@@ -59,14 +61,19 @@ export const RentDialog: React.FC<RentDialogProps> = ({
       setRequestId(safeRandomUUID());
       setError(null);
       setIsSubmitting(false);
+      if (defaultBusinessKey && eligibleBusinesses.some((b) => b.business_key === defaultBusinessKey)) {
+        setBusinessKey(defaultBusinessKey);
+      }
     }
-  }, [isOpen, defaultPayerId, teams]);
+  }, [isOpen, defaultPayerId, defaultBusinessKey, teams]);
 
   useEffect(() => {
-    if (eligibleBusinesses.length > 0 && !eligibleBusinesses.some((b) => b.business_key === businessKey)) {
+    if (defaultBusinessKey && eligibleBusinesses.some((b) => b.business_key === defaultBusinessKey)) {
+      setBusinessKey(defaultBusinessKey);
+    } else if (eligibleBusinesses.length > 0 && !eligibleBusinesses.some((b) => b.business_key === businessKey)) {
       setBusinessKey(eligibleBusinesses[0].business_key);
     }
-  }, [payerId, eligibleBusinesses, businessKey]);
+  }, [payerId, eligibleBusinesses, businessKey, defaultBusinessKey]);
 
   const payer = teams.find((t) => t.id === payerId);
   const selectedBizInfo = eligibleBusinesses.find((b) => b.business_key === businessKey);
@@ -140,9 +147,7 @@ export const RentDialog: React.FC<RentDialogProps> = ({
             ) : (
               <select
                 value={businessKey}
-                onChange={(e) => {
-                  setBusinessKey(e.target.value);
-                }}
+                onChange={(e) => setBusinessKey(e.target.value)}
                 className="p-2 border-2 border-brand-navy bg-brand-white font-sans text-xs font-bold text-brand-navy focus:outline-none focus:ring-2 focus:ring-brand-gold"
               >
                 {eligibleBusinesses.map((b) => (

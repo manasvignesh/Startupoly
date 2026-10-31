@@ -15,6 +15,7 @@ export interface ConsoleTopBarProps {
   onAbortGame?: () => void;
   onExtendTenMinutes?: () => void;
   isExtendingTime?: boolean;
+  onFinalizeMatch?: () => void;
 }
 
 export const ConsoleTopBar: React.FC<ConsoleTopBarProps> = ({
@@ -29,6 +30,7 @@ export const ConsoleTopBar: React.FC<ConsoleTopBarProps> = ({
   onAbortGame,
   onExtendTenMinutes,
   isExtendingTime = false,
+  onFinalizeMatch,
 }) => {
   return (
     <header className="bg-brand-navy text-white border-b-4 border-brand-navy px-4 py-3 flex flex-wrap items-center justify-between gap-4 shadow-pixel select-none">
@@ -94,6 +96,23 @@ export const ConsoleTopBar: React.FC<ConsoleTopBarProps> = ({
           >
             <span>⚡</span>
             <span>{isExtendingTime ? '+10M...' : '+10M TIME'}</span>
+          </button>
+        )}
+
+        {/* Quick Finalize Match Button */}
+        {onFinalizeMatch && (status === 'ACTIVE' || status === 'TIME_EXPIRED') && (
+          <button
+            type="button"
+            onClick={onFinalizeMatch}
+            title="Finalize match and lock tournament results at any time"
+            className="
+              font-pixel text-[10px] bg-brand-gold text-brand-navy px-2.5 py-1.5
+              border-2 border-brand-navy shadow-pixel-sm hover:bg-yellow-400
+              active:translate-y-0.5 cursor-pointer flex items-center gap-1 font-bold uppercase transition-all
+            "
+          >
+            <span>🏆</span>
+            <span>FINALIZE</span>
           </button>
         )}
       </div>
