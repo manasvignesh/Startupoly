@@ -10276,3 +10276,9 @@ $function$;
 
 REVOKE ALL ON FUNCTION public.admin_finalize(uuid, uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.admin_finalize(uuid, uuid) TO authenticated;
+
+
+-- Migration 0034: Register admin user 99555f62-d188-48a5-b366-394e51bb42cd
+INSERT INTO public.admins (user_id)
+VALUES ('99555f62-d188-48a5-b366-394e51bb42cd')
+ON CONFLICT (user_id) DO NOTHING;
