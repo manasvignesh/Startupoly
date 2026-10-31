@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { StandingsTable } from './StandingsTable';
 import { FinalizePanel } from './FinalizePanel';
@@ -13,6 +13,7 @@ vi.mock('../../../data/rpc', async () => {
     ...actual,
     rpcGetStandings: vi.fn(),
     rpcAdminFinalize: vi.fn(),
+    rpcAdminCancelRoom: vi.fn(),
   };
 });
 
@@ -162,6 +163,49 @@ describe('FinalizePanel', () => {
     // Confirm
     fireEvent.click(screen.getByRole('button', { name: /CONFIRM FINALIZATION/i }));
     expect(rpcModule.rpcAdminFinalize).toHaveBeenCalledWith('room-1');
+  });
+
+  it('falls back to rpcAdminCancelRoom when finalizing early during ACTIVE match', async () => {
+    const activeSnapshot: rpcModule.AdminRoomSnapshot = {
+      ...mockSnapshot,
+      room: {
+        ...mockSnapshot.room,
+        status: 'ACTIVE',
+      },
+    };
+    vi.mocked(rpcModule.rpcGetStandings).mockResolvedValue({ standings: mockStandings });
+    vi.mocked(rpcModule.rpcAdminFinalize).mockRejectedValue({
+      code: 'INVALID_TRANSITION',
+      message: 'Invalid room status transition requested.',
+    });
+    vi.mocked(rpcModule.rpcAdminCancelRoom).mockResolvedValue({
+      room_id: 'room-1',
+      status: 'FINALIZED',
+      cancelled: true,
+    });
+    const onRefetch = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <ToastProvider>
+        <FinalizePanel
+          roomId="room-1"
+          snapshot={activeSnapshot}
+          onRefetch={onRefetch}
+        />
+      </ToastProvider>
+    );
+
+    const finalizeBtn = await screen.findByRole('button', { name: /FINALIZE MATCH/i });
+    await waitFor(() => expect(finalizeBtn).not.toBeDisabled());
+    fireEvent.click(finalizeBtn);
+    const confirmBtn = await screen.findByRole('button', { name: /CONFIRM FINALIZATION/i });
+    fireEvent.click(confirmBtn);
+
+    await waitFor(() => {
+      expect(rpcModule.rpcAdminFinalize).toHaveBeenCalledWith('room-1');
+      expect(rpcModule.rpcAdminCancelRoom).toHaveBeenCalledWith('room-1', 'Match finalized early by host');
+      expect(onRefetch).toHaveBeenCalled();
+    });
   });
 });
 

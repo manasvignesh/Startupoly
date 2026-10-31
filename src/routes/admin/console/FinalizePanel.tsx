@@ -50,7 +50,14 @@ export const FinalizePanel: React.FC<FinalizePanelProps> = ({
       } catch (finalizeErr: any) {
         // If remote database still enforces TIME_EXPIRED, fallback to admin_cancel_room
         // which reliably transitions room to FINALIZED and enables ResultView
-        if (finalizeErr?.message?.includes('INVALID_TRANSITION')) {
+        const isTransitionError =
+          finalizeErr?.code === 'INVALID_TRANSITION' ||
+          finalizeErr?.message?.includes('INVALID_TRANSITION') ||
+          finalizeErr?.message?.includes('Invalid room status transition') ||
+          finalizeErr?.message?.includes('TIME_EXPIRED');
+
+        if (isTransitionError) {
+          console.warn('[FinalizePanel] admin_finalize rejected early active finalization, falling back to cancel room to finalize:', finalizeErr);
           await rpcAdminCancelRoom(roomId, 'Match finalized early by host');
         } else {
           throw finalizeErr;
